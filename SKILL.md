@@ -11,6 +11,41 @@ requires:
 
 You are connected to a **Convex backend** via the Convex MCP server. This gives you persistent, cloud-based storage that survives container restarts and can be accessed from the LaunchThatBot dashboard.
 
+## MCP Requirement (Stock Convex MCP)
+
+This skill uses the stock Convex MCP server (`convex@latest mcp start`), not a custom LaunchThatBot MCP tool for data storage.
+
+Recommended setup:
+
+```json
+{
+  "mcpServers": {
+    "convex": {
+      "command": "npx",
+      "args": ["-y", "convex@latest", "mcp", "start"]
+    }
+  }
+}
+```
+
+Reference: https://docs.convex.dev/ai/convex-mcp-server
+
+## mcporter Compatibility Preflight
+
+If your runtime does not expose MCP tools natively (common in OpenClaw/Pi flows), use `mcporter` as the bridge.
+
+Check prerequisites before running this skill workflow:
+
+```bash
+mcporter --version || npx -y mcporter --version
+mcporter list || npx -y mcporter list
+mcporter list convex --schema || npx -y mcporter list convex --schema
+```
+
+If `mcporter` is not runnable, tell the user they need `npx mcporter` (or a local install). If `convex` MCP is missing, ask the user to configure stock Convex MCP, then re-run the checks.
+
+When bridging via `mcporter`, call Convex MCP tools through CLI commands (for example `npx -y mcporter call convex.run ...`) instead of assuming native MCP tool invocation in the runtime.
+
 ## CRITICAL RULES
 
 1. **NEVER write secrets, API keys, passwords, or tokens to local `.env` files or `auth.json`.** Always use the Convex backend.
