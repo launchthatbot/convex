@@ -48,57 +48,128 @@ When bridging via `mcporter`, call Convex MCP tools through CLI commands (for ex
 
 ## CRITICAL RULES
 
-1. **NEVER write secrets, API keys, passwords, or tokens to local `.env` files or `auth.json`.** Always use the Convex backend.
-2. **NEVER store sensitive credentials in MEMORY.md or daily log files.** Use the `secrets:set` mutation.
-3. **Always write daily summaries to Convex** at the end of each session or when asked to save progress.
-4. **Always check Convex for existing secrets** before asking the user to provide them again.
+1. **`CONVEX_DEPLOY_KEY` is the only key allowed in local `.env`.** Keep it local because Convex MCP bootstrap depends on it.
+2. **NEVER store `CONVEX_DEPLOY_KEY` in Convex (`envSet`).**
+3. **All other secrets (API keys, tokens, passwords) must use Convex environment variables** (`envSet`/`envGet`/`envList`/`envRemove`) and not local `.env` or `auth.json`.
+4. **NEVER store sensitive credentials in MEMORY.md or daily log files.**
+5. **Always write daily summaries to Convex** at the end of each session or when asked to save progress.
+6. **Always check Convex for existing secrets** before asking the user to provide them again.
+
+## Bootstrap Rule (Required)
+
+Before Convex MCP operations can work, `CONVEX_DEPLOY_KEY` must already exist in local runtime env (`.env` / deployment env vars).
+
+If `CONVEX_DEPLOY_KEY` is missing:
+- stop secret/memory operations
+- tell the user exactly what is missing
+- ask them to set `CONVEX_DEPLOY_KEY` locally and restart/reload MCP
+- re-run preflight:
+
+```bash
+mcporter list convex --schema || npx -y mcporter list convex --schema
+```
+
+Do not attempt to save `CONVEX_DEPLOY_KEY` to Convex.
+
+## Required Convex Deploy Step
+
+This skill package includes a Convex app under the `convex/` folder and `convex.json` at package root.
+The required backend logic is mounted as a local component:
+- component name: `convex_openclaw_backend_component`
+- app mount alias: `openclawBackend`
+
+After installing or updating this skill, run deploy from the skill root:
+
+```bash
+cd /home/node/.openclaw/skills/convex-backend
+CONVEX_DEPLOY_KEY=... npx -y convex@latest deploy
+```
+
+Why:
+- `npx convex deploy` must run in the directory containing `convex.json`.
+- Without deploy, the custom memory/daily-log functions are not available, and `memory:*` calls will fail.
+
+## Rule for Adding Custom Logic
+
+If the user asks for new backend functionality (for example custom task tables, new mutations, or queries):
+1. Keep required integration logic inside component files (`convex/components/openclawBackend/*`).
+2. Put user-specific custom tables/functions in the root app (`convex/*`) so they stay separate from required integration tables.
+3. Re-run deploy from skill root each time changes are made.
+4. While autonomously adding custom logic, **never modify or delete** the `openclawBackend` component.
+5. Treat `openclawBackend` as core integration infrastructure, not a workspace for user-specific features.
+
+If you change Convex code but do not deploy, newly added functions/tables will not exist in the user's Convex deployment.
 
 ## Storing Secrets (API Keys, Passwords, Tokens)
 
-When a user provides an API key, password, or any credential:
+Use stock Convex MCP environment variable tools for secrets:
+- `envSet`
+- `envGet`
+- `envList`
+- `envRemove`
 
-1. Use the Convex MCP `run` tool to call `secrets:set`:
-   ```
-   Function: secrets:set
-   Arguments: {
-     "agentId": "<your-agent-id>",
-     "key": "OPENAI_API_KEY",
-     "value": "sk-...",
-     "category": "ai_provider",
-     "description": "OpenAI API key for GPT-4"
-   }
-   ```
+Do not use custom `secrets:*` functions for credentials in this skill.
 
-2. Common secret categories: `ai_provider`, `email`, `social_media`, `api`, `database`, `browser`, `other`
+### Secret naming strategy (shared + per-agent fallback)
 
-3. To retrieve a stored secret:
-   ```
-   Function: secrets:get
-   Arguments: { "agentId": "<your-agent-id>", "key": "OPENAI_API_KEY" }
-   ```
+For a logical secret key like `OPENAI_API_KEY`, resolve in this order:
+1. `AGENT_<agentId>_OPENAI_API_KEY` (agent-specific override)
+2. `AGENT_DEFAULT_OPENAI_API_KEY` (shared default for all agents)
+3. `OPENAI_API_KEY` (legacy global fallback, optional)
 
-4. To list all stored secrets (values hidden):
-   ```
-   Function: secrets:list
-   Arguments: { "agentId": "<your-agent-id>" }
-   ```
+Examples:
+- Agent override: `AGENT_agent2_OPENAI_API_KEY`
+- Shared default: `AGENT_DEFAULT_OPENAI_API_KEY`
 
-5. To delete a secret:
-   ```
-   Function: secrets:remove
-   Arguments: { "agentId": "<your-agent-id>", "key": "OPENAI_API_KEY" }
-   ```
+### Write / Read / Remove examples
 
-## Also Set as Environment Variable
-
-After storing a secret in Convex, also set it as a deployment environment variable so other tools and services can access it:
-
+Set shared default:
 ```
 Tool: envSet
-Arguments: { "name": "OPENAI_API_KEY", "value": "sk-..." }
+Arguments: { "name": "AGENT_DEFAULT_OPENAI_API_KEY", "value": "sk-..." }
 ```
 
-This ensures both the Convex database and the runtime environment have the value.
+Set agent-specific override:
+```
+Tool: envSet
+Arguments: { "name": "AGENT_<agentId>_OPENAI_API_KEY", "value": "sk-..." }
+```
+
+Read by fallback chain:
+1. `envGet("AGENT_<agentId>_OPENAI_API_KEY")`
+2. if missing, `envGet("AGENT_DEFAULT_OPENAI_API_KEY")`
+3. if missing, optionally `envGet("OPENAI_API_KEY")`
+
+Remove an agent override:
+```
+Tool: envRemove
+Arguments: { "name": "AGENT_<agentId>_OPENAI_API_KEY" }
+```
+
+## First-Run Migration for Existing `.env` Keys
+
+If this skill is installed on an existing agent that already has many keys in local `.env`, run this migration prompt after Convex MCP preflight succeeds:
+
+Ask the user:
+> "Convex backend is configured. Do you want me to migrate all local `.env` secrets into Convex and remove them from local `.env`?  
+> Recommended: Yes.  
+> Local `.env` will keep only `CONVEX_DEPLOY_KEY`."
+
+If user confirms:
+1. Read local `.env` and collect secret key/value pairs.
+2. Exclude `CONVEX_DEPLOY_KEY`.
+3. For each remaining key, migrate to Convex env using naming convention above:
+   - preferred: `AGENT_DEFAULT_<KEY>`
+   - optional per-agent override: `AGENT_<agentId>_<KEY>`
+4. Verify migration with `envList` and targeted `envGet`.
+5. Remove migrated keys from local `.env`.
+6. Keep only `CONVEX_DEPLOY_KEY` in local `.env`.
+7. Confirm completion with a migrated-key count.
+
+Safety notes:
+- Create a local backup of `.env` before mutation.
+- Do not print secret values in chat/log output.
+- If any key fails migration, do not delete that key from local `.env` until retry succeeds.
 
 ## Storing Long-Term Memory
 
@@ -151,7 +222,7 @@ Arguments: { "agentId": "<your-agent-id>", "limit": 7 }
 
 At the beginning of each session:
 
-1. Check for stored secrets: `secrets:list`
+1. Check for configured env secrets: `envList` (and `envGet` for required keys)
 2. Load recent memories: `memory:searchMemory` with limit 20
 3. Load today's log: `memory:getDailyLog` with today's date
 4. Load yesterday's log for continuity context
