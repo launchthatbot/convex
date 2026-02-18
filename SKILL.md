@@ -1,6 +1,6 @@
 ---
 name: convex-backend
-version: 1.0.0
+version: 1.0.1
 description: Store secrets, memory, and daily logs in your Convex backend instead of local files
 author: LaunchThatBot
 requires:
